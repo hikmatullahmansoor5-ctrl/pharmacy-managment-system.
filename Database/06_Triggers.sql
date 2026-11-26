@@ -1,0 +1,147 @@
+CREATE OR REPLACE EDITIONABLE TRIGGER "PHARMACY_MANAGEMENT"."TRG_UPDATE_SALE_TOTAL"
+FOR INSERT OR UPDATE OR DELETE
+ON SALE_DETAIL
+COMPOUND TRIGGER
+
+    TYPE T_SALE_IDS IS TABLE OF NUMBER
+        INDEX BY PLS_INTEGER;
+
+    G_SALE_IDS T_SALE_IDS;
+    G_COUNT PLS_INTEGER := 0;
+
+    PROCEDURE ADD_SALE_ID(P_ID NUMBER)
+    IS
+    BEGIN
+        IF P_ID IS NOT NULL THEN
+            FOR I IN 1 .. G_COUNT LOOP
+                IF G_SALE_IDS(I) = P_ID THEN
+                    RETURN;
+                END IF;
+            END LOOP;
+
+            G_COUNT := G_COUNT + 1;
+            G_SALE_IDS(G_COUNT) := P_ID;
+        END IF;
+    END;
+
+    AFTER EACH ROW IS
+    BEGIN
+        IF INSERTING OR UPDATING THEN
+            ADD_SALE_ID(:NEW.SALE_ID);
+        END IF;
+
+        IF DELETING OR UPDATING THEN
+            ADD_SALE_ID(:OLD.SALE_ID);
+        END IF;
+    END AFTER EACH ROW;
+
+    AFTER STATEMENT IS
+    BEGIN
+        FOR I IN 1 .. G_COUNT LOOP
+            UPDATE SALE
+            SET TOTAL_AMOUNT = (
+                SELECT NVL(SUM(SUBTOTAL), 0)
+                FROM SALE_DETAIL
+                WHERE SALE_ID = G_SALE_IDS(I)
+            )
+            WHERE SALE_ID = G_SALE_IDS(I);
+        END LOOP;
+    END AFTER STATEMENT;
+
+END;
+/
+
+ALTER TRIGGER "PHARMACY_MANAGEMENT"."TRG_UPDATE_SALE_TOTAL" ENABLE;
+
+
+
+
+
+
+
+
+CREATE OR REPLACE EDITIONABLE TRIGGER "PHARMACY_MANAGEMENT"."TRG_REDUCE_STOCK"
+BEFORE INSERT OR UPDATE OR DELETE
+ON SALE_DETAIL
+FOR EACH ROW
+DECLARE
+    V_STOCK NUMBER;
+BEGIN
+    IF INSERTING THEN
+
+        SELECT QUANTITY
+        INTO V_STOCK
+        FROM INVENTORY
+        WHERE INVENTORY_ID = :NEW.INVENTORY_ID
+        FOR UPDATE;
+
+        IF V_STOCK < :NEW.QUANTITY THEN
+            RAISE_APPLICATION_ERROR(
+                -20001,
+                'Insufficient stock!'
+            );
+        END IF;
+
+        UPDATE INVENTORY
+        SET QUANTITY = QUANTITY - :NEW.QUANTITY
+        WHERE INVENTORY_ID = :NEW.INVENTORY_ID;
+
+    ELSIF DELETING THEN
+
+        UPDATE INVENTORY
+        SET QUANTITY = QUANTITY + :OLD.QUANTITY
+        WHERE INVENTORY_ID = :OLD.INVENTORY_ID;
+
+    ELSIF UPDATING THEN
+
+        IF :OLD.INVENTORY_ID = :NEW.INVENTORY_ID THEN
+
+            SELECT QUANTITY
+            INTO V_STOCK
+            FROM INVENTORY
+            WHERE INVENTORY_ID = :NEW.INVENTORY_ID
+            FOR UPDATE;
+
+            IF V_STOCK + :OLD.QUANTITY < :NEW.QUANTITY THEN
+                RAISE_APPLICATION_ERROR(
+                    -20001,
+                    'Insufficient stock!'
+                );
+            END IF;
+
+            UPDATE INVENTORY
+            SET QUANTITY = QUANTITY
+                + :OLD.QUANTITY
+                - :NEW.QUANTITY
+            WHERE INVENTORY_ID = :NEW.INVENTORY_ID;
+
+        ELSE
+
+            SELECT QUANTITY
+            INTO V_STOCK
+            FROM INVENTORY
+            WHERE INVENTORY_ID = :NEW.INVENTORY_ID
+            FOR UPDATE;
+
+            IF V_STOCK < :NEW.QUANTITY THEN
+                RAISE_APPLICATION_ERROR(
+                    -20001,
+                    'Insufficient stock!'
+                );
+            END IF;
+
+            UPDATE INVENTORY
+            SET QUANTITY = QUANTITY + :OLD.QUANTITY
+            WHERE INVENTORY_ID = :OLD.INVENTORY_ID;
+
+            UPDATE INVENTORY
+            SET QUANTITY = QUANTITY - :NEW.QUANTITY
+            WHERE INVENTORY_ID = :NEW.INVENTORY_ID;
+
+        END IF;
+
+    END IF;
+END;
+/
+
+ALTER TRIGGER "PHARMACY_MANAGEMENT"."TRG_REDUCE_STOCK" ENABLE;
